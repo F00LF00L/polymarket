@@ -3,41 +3,54 @@ import pandas as pd
 import time
 import firebase_admin
 from firebase_admin import credentials, firestore
+import os
+import json
 
-print("🔌 מתחבר למסד הנתונים בענן...")
+def connect_firebase():
+    """פונקציה לחיבור לפיירבייס שתומכת גם במחשב וגם ב-GitHub"""
+    # בדיקה אם קיים Secret של GitHub
+    firebase_key = os.environ.get('FIREBASE_KEY')
+    
+    if firebase_key:
+        # התחברות באמצעות ה-Secret ב-GitHub
+        cred_dict = json.loads(firebase_key)
+        cred = credentials.Certificate(cred_dict)
+    else:
+        # התחברות מקומית באמצעות הקובץ (למטרות בדיקה במחשב)
+        cred = credentials.Certificate("firebase-key.json")
+    
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
 
-# --- חיבור לפיירבייס ---
-# ודא ששם הקובץ כאן זהה לשם הקובץ שהורדת ושמת בתיקייה
-cred = credentials.Certificate("firebase-key.json")
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+def get_polymarket_data():
+    BASE_URL = "https://clob.polymarket.com"
+    MARKETS_URL = f"{BASE_URL}/sampling-markets"
+    
+    print("📡 סורק שווקים ומחפש לווייתנים...")
+    
+    try:
+        response = requests.get(MARKETS_URL)
+        if response.status_code != 200:
+            print(f"❌ שגיאה בגישה ל-API: {response.status_code}")
+            return []
 
-BASE_URL = "https://clob.polymarket.com"
-MARKETS_URL = f"{BASE_URL}/sampling-markets"
-
-print("📡 סורק שווקים, מחשב השקעות ואוסף נתוני קהל...")
-
-try:
-    response = requests.get(MARKETS_URL)
-    if response.status_code == 200:
         raw_data = response.json()
-        markets_data = raw_data.get('data', []) if isinstance(raw_data, dict) else (raw_data if isinstance(raw_data, list) else [])
+        markets_data = raw_data.get('data', []) if isinstance(raw_data, dict) else raw_data
         
         active_markets = [m for m in markets_data if isinstance(m, dict) and m.get('active') == True]
         all_markets_results = []
         
-        for market in active_markets[:10]:
+        # סורק את 15 השווקים הפעילים הראשונים (אפשר להגדיל)
+        for market in active_markets[:15]:
             question = market.get('question', 'שוק ללא שם')
             tags = market.get('tags', [])
             tokens = market.get('tokens', [])
             
             biggest_whale_in_market = 0
             predicted_answer = "N/A"
-            
-            yes_voters = 0
-            no_voters = 0
-            yes_money = 0
-            no_money = 0
+            yes_voters, no_voters = 0, 0
+            yes_money, no_money = 0, 0
             
             if tokens and isinstance(tokens, list):
                 for token in tokens:
@@ -71,15 +84,15 @@ try:
                                 no_voters = num_voters
                                 no_money = total_outcome_money
                     
-                    time.sleep(0.5)
+                    time.sleep(0.3) # השהייה קלה למניעת חסימה
             
             total_market_money = yes_money + no_money
             
             if biggest_whale_in_market > 0:
-                category = tags[0] if tags else "כללי"
+                category = tags[0] if tags else "General"
                 all_markets_results.append({
                     'category': category,
-                    'question': question[:35] + "...", 
+                    'question': question, # השאלה המלאה עוברת כאן
                     'whale_answer': predicted_answer,
                     'whale_investment': round(biggest_whale_in_market, 2),
                     'total_yes_money': round(yes_money, 2),
@@ -89,25 +102,29 @@ try:
                     'no_voters': no_voters
                 })
         
-        if all_markets_results:
-            # ממיינים את הרשימה מהגדול לקטן לפני השמירה
-            all_markets_results_sorted = sorted(all_markets_results, key=lambda x: x['whale_investment'], reverse=True)
-            
-            print("\n✅ הסריקה הסתיימה! שולח נתונים לענן...")
-            
-            # --- שמירה לפיירבייס ---
-            doc_ref = db.collection('scans').document('latest')
-            doc_ref.set({
-                'timestamp': firestore.SERVER_TIMESTAMP,
-                'markets': all_markets_results_sorted
-            })
-            
-            print("🚀 הנתונים נשמרו בהצלחה במסד הנתונים של Firebase!")
-        else:
-            print("📭 לא מצאנו נתונים מתאימים בדגימה הזו.")
+        # מיון לפי גובה השקעת הלווייתן
+        return sorted(all_markets_results, key=lambda x: x['whale_investment'], reverse=True)
 
-    else:
-        print(f"❌ שגיאה בגישה ל-API: {response.status_code}")
-        
-except Exception as e:
-    print(f"⚠️ שגיאה כללית: {e}")
+    except Exception as e:
+        print(f"⚠️ שגיאה באיסוף הנתונים: {e}")
+        return []
+
+def upload_to_firebase(data):
+    if not data:
+        print("📭 אין נתונים חדשים להעלות.")
+        return
+
+    try:
+        db = connect_firebase()
+        doc_ref = db.collection('scans').document('latest')
+        doc_ref.set({
+            'timestamp': firestore.SERVER_TIMESTAMP,
+            'markets': data
+        })
+        print(f"🚀 {len(data)} שווקים עודכנו בהצלחה ב-Firebase!")
+    except Exception as e:
+        print(f"❌ שגיאה בשמירה לענן: {e}")
+
+if __name__ == "__main__":
+    results = get_polymarket_data()
+    upload_to_firebase(results)
