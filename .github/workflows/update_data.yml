@@ -1,0 +1,26 @@
+name: Update Polymarket Data
+on:
+  schedule:
+    - cron: '0 * * * *' # יריץ את הקוד בכל שעה עגולה אוטומטית
+  workflow_dispatch: # מאפשר לך להריץ ידנית בלחיצת כפתור
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install requests pandas firebase-admin
+
+      - name: Run script
+        env:
+          # כאן אנחנו מעבירים את הסוד מהכספת לתוך הקוד
+          FIREBASE_KEY: ${{ secrets.FIREBASE_KEY_JSON }}
+        run: python polymarket_bot.py
